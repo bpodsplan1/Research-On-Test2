@@ -403,13 +403,30 @@ function showAuthStatus(id, type, msg) {
 
 // ── 로그인 ──
 async function handleLogin() {
-  const email = document.getElementById('login-email').value.trim();
-  const pw    = document.getElementById('login-pw').value;
-  if (!email || !pw) { showAuthStatus('login-status','error','이메일과 비밀번호를 입력해주세요.'); return; }
+  const userId = document.getElementById('login-email').value.trim();
+  const pw     = document.getElementById('login-pw').value;
+  if (!userId || !pw) { showAuthStatus('login-status','error','ID와 비밀번호를 입력해주세요.'); return; }
 
-  const { data, error } = await _sb.auth.signInWithPassword({ email, password: pw });
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true;
+  showAuthStatus('login-status','loading','로그인 중...');
+
+  // profiles 테이블에서 user_id로 이메일 조회
+  const { data: profile, error: profileError } = await _sb
+    .from('profiles')
+    .select('email')
+    .eq('user_id', userId)
+    .single();
+
+  if (profileError || !profile) {
+    showAuthStatus('login-status','error','존재하지 않는 ID입니다.');
+    btn.disabled = false;
+    return;
+  }
+
+  const { data, error } = await _sb.auth.signInWithPassword({ email: profile.email, password: pw });
   if (error) {
-    showAuthStatus('login-status','error', error.message.includes('Invalid') ? '이메일 또는 비밀번호가 올바르지 않습니다.' : error.message);
+    showAuthStatus('login-status','error','비밀번호가 올바르지 않습니다.');
     btn.disabled = false;
     return;
   }
