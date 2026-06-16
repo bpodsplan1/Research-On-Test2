@@ -114,11 +114,11 @@
     <div class="auth-panel active" id="panel-login">
       <div class="auth-field">
         <label>ID</label>
-        <input type="text" id="login-email" placeholder="아이디 입력" />
+        <input type="text" id="login-id" placeholder="아이디 입력" autocomplete="username" />
       </div>
       <div class="auth-field">
         <label>비밀번호</label>
-        <input type="password" id="login-pw" placeholder="비밀번호 입력" />
+        <input type="password" id="login-pw" placeholder="비밀번호 입력" autocomplete="current-password" />
       </div>
       <button class="auth-btn" id="login-btn" onclick="handleLogin()">로그인</button>
       <div class="auth-status" id="login-status"></div>
@@ -138,25 +138,26 @@
       </div>
       <div class="auth-field">
         <label>이름</label>
-        <input type="text" id="signup-name" placeholder="홍길동" />
+        <input type="text" id="signup-name" placeholder="홍길동" autocomplete="name" />
       </div>
       <div class="auth-field">
         <label>이메일</label>
-        <input type="email" id="signup-email" placeholder="example@etners.com" />
+        <input type="email" id="signup-email" placeholder="example@etners.com" autocomplete="email" />
       </div>
       <div class="auth-field">
         <label>ID</label>
-        <input type="text" id="signup-id" placeholder="로그인 시 사용할 아이디 (영문/숫자 4자 이상)" />
+        <input type="text" id="signup-id" placeholder="로그인 시 사용할 아이디 (영문/숫자 4자 이상)" autocomplete="off" />
       </div>
       <div class="auth-field">
         <label>비밀번호 (8자 이상)</label>
-        <input type="password" id="signup-pw" placeholder="비밀번호 입력" />
+        <input type="password" id="signup-pw" placeholder="비밀번호 입력" autocomplete="new-password" />
       </div>
       <button class="auth-btn" id="signup-btn" onclick="handleSignup()">회원가입</button>
       <div class="auth-status" id="signup-status"></div>
     </div>
   </div>
 </div>
+
 
 <div class="app">
 <aside class="sidebar" id="sidebar">
@@ -385,25 +386,25 @@ document.addEventListener('DOMContentLoaded', init);
 const { createClient } = supabase;
 const _sb = createClient('https://aiftpranlfudkbobxyll.supabase.co', 'sb_publishable_qnUFAiMRiJNzARP_FE12Bg_3zFEdc94');
 
-// ── Auth 탭 전환 ──
+// ── 탭 전환 ──
 function switchAuthTab(tab) {
-  document.getElementById('panel-login').classList.toggle('active', tab === 'login');
-  document.getElementById('panel-signup').classList.toggle('active', tab === 'signup');
-  document.getElementById('tab-login').classList.toggle('active', tab === 'login');
-  document.getElementById('tab-signup').classList.toggle('active', tab === 'signup');
-  document.getElementById('login-status').className = 'auth-status';
+  ['login','signup'].forEach(t => {
+    document.getElementById('panel-' + t).classList.toggle('active', t === tab);
+    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+  });
+  document.getElementById('login-status').className  = 'auth-status';
   document.getElementById('signup-status').className = 'auth-status';
 }
 
 function showAuthStatus(id, type, msg) {
   const el = document.getElementById(id);
-  el.className = 'auth-status ' + type;
+  el.className   = 'auth-status ' + type;
   el.textContent = msg;
 }
 
-// ── 로그인 ──
+// ── 로그인 (ID → profiles에서 이메일 조회 → Supabase 로그인) ──
 async function handleLogin() {
-  const userId = document.getElementById('login-email').value.trim();
+  const userId = document.getElementById('login-id').value.trim();
   const pw     = document.getElementById('login-pw').value;
   if (!userId || !pw) { showAuthStatus('login-status','error','ID와 비밀번호를 입력해주세요.'); return; }
 
@@ -411,20 +412,29 @@ async function handleLogin() {
   loginBtn.disabled = true;
   showAuthStatus('login-status','loading','로그인 중...');
 
-  // profiles에서 user_id로 이메일 조회
-  const { data: profile, error: profileErr } = await _sb
+  // profiles에서 user_id로 이메일 조회 (RLS 비활성화 상태)
+  const { data: profileData, error: profileErr } = await _sb
     .from('profiles')
     .select('email')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
-  if (profileErr || !profile) {
+  if (profileErr) {
+    showAuthStatus('login-status','error','서버 오류가 발생했습니다: ' + profileErr.message);
+    loginBtn.disabled = false;
+    return;
+  }
+  if (!profileData) {
     showAuthStatus('login-status','error','존재하지 않는 ID입니다.');
     loginBtn.disabled = false;
     return;
   }
 
-  const { data, error } = await _sb.auth.signInWithPassword({ email: profile.email, password: pw });
+  const { data, error } = await _sb.auth.signInWithPassword({
+    email: profileData.email,
+    password: pw
+  });
+
   if (error) {
     showAuthStatus('login-status','error','비밀번호가 올바르지 않습니다.');
     loginBtn.disabled = false;
@@ -436,58 +446,65 @@ async function handleLogin() {
 // ── 회원가입 ──
 async function handleSignup() {
   const affiliation = document.getElementById('signup-affiliation').value;
-  const name   = document.getElementById('signup-name').value.trim();
-  const email  = document.getElementById('signup-email').value.trim();
-  const userId = document.getElementById('signup-id').value.trim();
-  const pw     = document.getElementById('signup-pw').value;
+  const name        = document.getElementById('signup-name').value.trim();
+  const email       = document.getElementById('signup-email').value.trim();
+  const userId      = document.getElementById('signup-id').value.trim();
+  const pw          = document.getElementById('signup-pw').value;
 
-  if (!affiliation || !name || !email || !userId || !pw) { showAuthStatus('signup-status','error','모든 항목을 입력해주세요.'); return; }
-  if (!email.endsWith('@etners.com')) { showAuthStatus('signup-status','error','@etners.com 도메인 이메일만 가입 가능합니다.'); return; }
-  if (!/^[a-zA-Z0-9]{4,}$/.test(userId)) { showAuthStatus('signup-status','error','ID는 영문/숫자 4자 이상이어야 합니다.'); return; }
-  if (pw.length < 8) { showAuthStatus('signup-status','error','비밀번호는 8자 이상이어야 합니다.'); return; }
+  if (!affiliation || !name || !email || !userId || !pw) {
+    showAuthStatus('signup-status','error','모든 항목을 입력해주세요.'); return;
+  }
+  if (!email.endsWith('@etners.com')) {
+    showAuthStatus('signup-status','error','@etners.com 도메인 이메일만 가입 가능합니다.'); return;
+  }
+  if (!/^[a-zA-Z0-9]{4,}$/.test(userId)) {
+    showAuthStatus('signup-status','error','ID는 영문/숫자 4자 이상이어야 합니다.'); return;
+  }
+  if (pw.length < 8) {
+    showAuthStatus('signup-status','error','비밀번호는 8자 이상이어야 합니다.'); return;
+  }
 
-  const btn = document.getElementById('signup-btn');
-  btn.disabled = true;
+  const signupBtn = document.getElementById('signup-btn');
+  signupBtn.disabled = true;
   showAuthStatus('signup-status','loading','처리 중...');
 
+  // Supabase Auth 회원가입
   const { data, error } = await _sb.auth.signUp({ email, password: pw });
   if (error) {
     showAuthStatus('signup-status','error', error.message);
-    btn.disabled = false;
+    signupBtn.disabled = false;
     return;
   }
 
-  // profiles 테이블에 사용자 정보 저장
+  // profiles 테이블에 저장 (RLS 비활성화 상태이므로 바로 insert)
   if (data.user) {
-    const insertPayload = {
-      id: data.user.id,
-      email: email,
-      name: name,
+    const { error: insertErr } = await _sb.from('profiles').insert({
+      id:          data.user.id,
+      email:       email,
+      name:        name,
       affiliation: affiliation,
-      user_id: userId,
-      role: 'user'
-    };
-    console.log('profiles insert 시도:', insertPayload);
-    const { data: insertData, error: profileError } = await _sb
-      .from('profiles')
-      .insert(insertPayload)
-      .select();
-    if (profileError) {
-      console.error('profiles insert 오류:', profileError.message, profileError.details, profileError.hint);
-    } else {
-      console.log('profiles insert 성공:', insertData);
+      user_id:     userId,
+      role:        'user'
+    });
+    if (insertErr) {
+      showAuthStatus('signup-status','error','프로필 저장 실패: ' + insertErr.message);
+      signupBtn.disabled = false;
+      return;
     }
   }
 
   showAuthStatus('signup-status','success','회원가입 완료! 로그인해주세요.');
-  btn.disabled = false;
+  signupBtn.disabled = false;
   setTimeout(() => switchAuthTab('login'), 1500);
 }
 
 // ── 앱 진입 ──
 async function enterApp(user) {
-  // profiles에서 사용자 정보 조회
-  const { data: profile } = await _sb.from('profiles').select('*').eq('id', user.id).single();
+  const { data: profile } = await _sb
+    .from('profiles')
+    .select('*')
+    .eq('id', user.id)
+    .single();
 
   const name        = profile?.name        || user.email.split('@')[0];
   const affiliation = profile?.affiliation || '';
@@ -501,22 +518,19 @@ async function enterApp(user) {
   if (nameEl)   nameEl.textContent   = name;
   if (roleEl)   roleEl.textContent   = affiliation + ' · ' + (role === 'admin' ? 'Admin' : 'Standard');
 
-  // sidebar-footer 로그아웃 버튼 추가
+  // 로그아웃 버튼 추가
   const footer = document.querySelector('.sidebar-footer');
   if (footer && !footer.querySelector('.logout-btn')) {
-    const logoutBtn = document.createElement('button');
-    logoutBtn.className = 'btn line logout-btn';
-    logoutBtn.style.cssText = 'width:100%;margin-top:10px;background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.3)';
-    logoutBtn.textContent = '로그아웃';
-    logoutBtn.onclick = handleLogout;
-    footer.appendChild(logoutBtn);
+    const btn = document.createElement('button');
+    btn.className = 'btn line logout-btn';
+    btn.style.cssText = 'width:100%;margin-top:10px;background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.3)';
+    btn.textContent = '로그아웃';
+    btn.onclick = handleLogout;
+    footer.appendChild(btn);
   }
 
-  // 관리자 메뉴 표시
+  // 관리자 메뉴
   if (role === 'admin') showAdminNav();
-
-  // 세션 저장
-  sessionStorage.setItem('raUser', JSON.stringify({ name, affiliation, role, email: user.email }));
 
   // 앱 화면 표시
   document.getElementById('auth-overlay').classList.add('hidden');
@@ -525,13 +539,12 @@ async function enterApp(user) {
 // ── 로그아웃 ──
 async function handleLogout() {
   await _sb.auth.signOut();
-  sessionStorage.removeItem('raUser');
-  // 관리자 메뉴 제거
   const adminNav = document.getElementById('admin-nav');
   if (adminNav) adminNav.remove();
-  // 로그인 화면 복귀
+  const logoutBtn = document.querySelector('.logout-btn');
+  if (logoutBtn) logoutBtn.remove();
   document.getElementById('auth-overlay').classList.remove('hidden');
-  document.getElementById('login-email').value = '';
+  document.getElementById('login-id').value = '';
   document.getElementById('login-pw').value = '';
   document.getElementById('login-status').className = 'auth-status';
   document.getElementById('login-btn').disabled = false;
@@ -543,18 +556,17 @@ function showAdminNav() {
   if (document.getElementById('admin-nav')) return;
   const nav = document.querySelector('.sidebar nav');
   if (!nav) return;
-  const adminSection = document.createElement('div');
-  adminSection.id = 'admin-nav';
-  adminSection.className = 'nav-section';
-  adminSection.innerHTML = `
+  const sec = document.createElement('div');
+  sec.id = 'admin-nav';
+  sec.className = 'nav-section';
+  sec.innerHTML = `
     <div class="nav-title" style="color:#2563eb">Admin</div>
     <button class="nav-item" data-page="admin-keyword" type="button"><span class="nav-icon">🏷️</span>키워드 관리</button>
     <button class="nav-item" data-page="admin-approve" type="button"><span class="nav-icon">✅</span>계정 승인</button>
     <button class="nav-item" data-page="admin-newsletter" type="button"><span class="nav-icon">📮</span>뉴스레터 관리</button>
   `;
-  nav.appendChild(adminSection);
-  // 새로 추가된 nav-item 이벤트 바인딩
-  adminSection.querySelectorAll('.nav-item[data-page]').forEach(btn => {
+  nav.appendChild(sec);
+  sec.querySelectorAll('.nav-item[data-page]').forEach(btn => {
     btn.addEventListener('click', () => goPage(btn.dataset.page));
   });
 }
@@ -562,12 +574,10 @@ function showAdminNav() {
 // ── 세션 복원 ──
 (async function restoreSession() {
   const { data: { session } } = await _sb.auth.getSession();
-  if (session?.user) {
-    await enterApp(session.user);
-  }
+  if (session?.user) await enterApp(session.user);
 })();
 
-// 엔터키 지원
+// ── 엔터키 ──
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
   if (document.getElementById('auth-overlay').classList.contains('hidden')) return;
@@ -575,6 +585,5 @@ document.addEventListener('keydown', e => {
   else handleSignup();
 });
 </script>
-
 </body>
 </html>
