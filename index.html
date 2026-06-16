@@ -407,27 +407,27 @@ async function handleLogin() {
   const pw     = document.getElementById('login-pw').value;
   if (!userId || !pw) { showAuthStatus('login-status','error','ID와 비밀번호를 입력해주세요.'); return; }
 
-  const btn = document.getElementById('login-btn');
-  btn.disabled = true;
+  const loginBtn = document.getElementById('login-btn');
+  loginBtn.disabled = true;
   showAuthStatus('login-status','loading','로그인 중...');
 
-  // profiles 테이블에서 user_id로 이메일 조회
-  const { data: profile, error: profileError } = await _sb
+  // profiles에서 user_id로 이메일 조회
+  const { data: profile, error: profileErr } = await _sb
     .from('profiles')
     .select('email')
     .eq('user_id', userId)
     .single();
 
-  if (profileError || !profile) {
+  if (profileErr || !profile) {
     showAuthStatus('login-status','error','존재하지 않는 ID입니다.');
-    btn.disabled = false;
+    loginBtn.disabled = false;
     return;
   }
 
   const { data, error } = await _sb.auth.signInWithPassword({ email: profile.email, password: pw });
   if (error) {
     showAuthStatus('login-status','error','비밀번호가 올바르지 않습니다.');
-    btn.disabled = false;
+    loginBtn.disabled = false;
     return;
   }
   await enterApp(data.user);
@@ -459,15 +459,24 @@ async function handleSignup() {
 
   // profiles 테이블에 사용자 정보 저장
   if (data.user) {
-    const { error: profileError } = await _sb.from('profiles').insert({
+    const insertPayload = {
       id: data.user.id,
-      email,
-      name,
-      affiliation,
+      email: email,
+      name: name,
+      affiliation: affiliation,
       user_id: userId,
       role: 'user'
-    });
-    if (profileError) console.error('profiles insert 오류:', profileError.message);
+    };
+    console.log('profiles insert 시도:', insertPayload);
+    const { data: insertData, error: profileError } = await _sb
+      .from('profiles')
+      .insert(insertPayload)
+      .select();
+    if (profileError) {
+      console.error('profiles insert 오류:', profileError.message, profileError.details, profileError.hint);
+    } else {
+      console.log('profiles insert 성공:', insertData);
+    }
   }
 
   showAuthStatus('signup-status','success','회원가입 완료! 로그인해주세요.');
