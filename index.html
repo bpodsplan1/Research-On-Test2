@@ -381,177 +381,234 @@ function init(){ renderCore(); renderExt(); updateSelection(); setStep(0); updat
 document.addEventListener('DOMContentLoaded', init);
 </script>
 
-<script>
-// ── Supabase 초기화 ──
-const { createClient } = supabase;
-const _sb = createClient('https://aiftpranlfudkbobxyll.supabase.co', 'sb_publishable_qnUFAiMRiJNzARP_FE12Bg_3zFEdc94');
 
-// ── 탭 전환 ──
-function switchAuthTab(tab) {
-  ['login','signup'].forEach(t => {
-    document.getElementById('panel-' + t).classList.toggle('active', t === tab);
-    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
-  });
+<script>
+// ════════════════════════════════════════════
+//  Supabase 초기화
+// ════════════════════════════════════════════
+const { createClient } = supabase;
+const _sb = createClient(
+  'https://aiftpranlfudkbobxyll.supabase.co',
+  'sb_publishable_qnUFAiMRiJNzARP_FE12Bg_3zFEdc94'
+);
+
+// ════════════════════════════════════════════
+//  유틸
+// ════════════════════════════════════════════
+function showAuthStatus(id, type, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'auth-status ' + type;
+  el.textContent = msg;
+}
+
+function clearAuthStatus() {
   document.getElementById('login-status').className  = 'auth-status';
   document.getElementById('signup-status').className = 'auth-status';
 }
 
-function showAuthStatus(id, type, msg) {
-  const el = document.getElementById(id);
-  el.className   = 'auth-status ' + type;
-  el.textContent = msg;
+function switchAuthTab(tab) {
+  ['login', 'signup'].forEach(t => {
+    document.getElementById('panel-' + t).classList.toggle('active', t === tab);
+    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+  });
+  clearAuthStatus();
 }
 
-// ── 로그인 (ID → profiles에서 이메일 조회 → Supabase 로그인) ──
+// ════════════════════════════════════════════
+//  로그인
+//  흐름: ID 입력 → profiles.user_id 조회 → 이메일 확보 → signInWithPassword
+// ════════════════════════════════════════════
 async function handleLogin() {
   const userId = document.getElementById('login-id').value.trim();
   const pw     = document.getElementById('login-pw').value;
-  if (!userId || !pw) { showAuthStatus('login-status','error','ID와 비밀번호를 입력해주세요.'); return; }
+
+  if (!userId || !pw) {
+    showAuthStatus('login-status', 'error', 'ID와 비밀번호를 입력해주세요.');
+    return;
+  }
 
   const loginBtn = document.getElementById('login-btn');
   loginBtn.disabled = true;
-  showAuthStatus('login-status','loading','로그인 중...');
+  showAuthStatus('login-status', 'loading', '로그인 중...');
 
-  // profiles에서 user_id로 이메일 조회 (RLS 비활성화 상태)
-  const { data: profileData, error: profileErr } = await _sb
-    .from('profiles')
-    .select('email')
-    .eq('user_id', userId)
-    .maybeSingle();
+  try {
+    // ① profiles 테이블에서 user_id → email 조회
+    const { data: profile, error: profileErr } = await _sb
+      .from('profiles')
+      .select('email')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-  if (profileErr) {
-    showAuthStatus('login-status','error','서버 오류가 발생했습니다: ' + profileErr.message);
+    if (profileErr) throw new Error('프로필 조회 실패: ' + profileErr.message);
+    if (!profile)   throw new Error('존재하지 않는 ID입니다.');
+
+    // ② 조회한 이메일로 Supabase Auth 로그인
+    const { data: authData, error: authErr } = await _sb.auth.signInWithPassword({
+      email:    profile.email,
+      password: pw,
+    });
+
+    if (authErr) throw new Error('비밀번호가 올바르지 않습니다.');
+
+    await enterApp(authData.user);
+
+  } catch (e) {
+    showAuthStatus('login-status', 'error', e.message);
     loginBtn.disabled = false;
-    return;
   }
-  if (!profileData) {
-    showAuthStatus('login-status','error','존재하지 않는 ID입니다.');
-    loginBtn.disabled = false;
-    return;
-  }
-
-  const { data, error } = await _sb.auth.signInWithPassword({
-    email: profileData.email,
-    password: pw
-  });
-
-  if (error) {
-    showAuthStatus('login-status','error','비밀번호가 올바르지 않습니다.');
-    loginBtn.disabled = false;
-    return;
-  }
-  await enterApp(data.user);
 }
 
-// ── 회원가입 ──
+// ════════════════════════════════════════════
+//  회원가입
+//  흐름: 입력값 검증 → ID 중복확인 → signUp → profiles INSERT
+// ════════════════════════════════════════════
 async function handleSignup() {
   const affiliation = document.getElementById('signup-affiliation').value;
   const name        = document.getElementById('signup-name').value.trim();
-  const email       = document.getElementById('signup-email').value.trim();
+  const email       = document.getElementById('signup-email').value.trim().toLowerCase();
   const userId      = document.getElementById('signup-id').value.trim();
   const pw          = document.getElementById('signup-pw').value;
 
+  // 입력값 검증
   if (!affiliation || !name || !email || !userId || !pw) {
-    showAuthStatus('signup-status','error','모든 항목을 입력해주세요.'); return;
+    showAuthStatus('signup-status', 'error', '모든 항목을 입력해주세요.');
+    return;
   }
   if (!email.endsWith('@etners.com')) {
-    showAuthStatus('signup-status','error','@etners.com 도메인 이메일만 가입 가능합니다.'); return;
+    showAuthStatus('signup-status', 'error', '@etners.com 도메인 이메일만 가입 가능합니다.');
+    return;
   }
   if (!/^[a-zA-Z0-9]{4,}$/.test(userId)) {
-    showAuthStatus('signup-status','error','ID는 영문/숫자 4자 이상이어야 합니다.'); return;
+    showAuthStatus('signup-status', 'error', 'ID는 영문/숫자 4자 이상이어야 합니다.');
+    return;
   }
   if (pw.length < 8) {
-    showAuthStatus('signup-status','error','비밀번호는 8자 이상이어야 합니다.'); return;
+    showAuthStatus('signup-status', 'error', '비밀번호는 8자 이상이어야 합니다.');
+    return;
   }
 
   const signupBtn = document.getElementById('signup-btn');
   signupBtn.disabled = true;
-  showAuthStatus('signup-status','loading','처리 중...');
+  showAuthStatus('signup-status', 'loading', '처리 중...');
 
-  // Supabase Auth 회원가입
-  const { data, error } = await _sb.auth.signUp({ email, password: pw });
-  if (error) {
-    showAuthStatus('signup-status','error', error.message);
-    signupBtn.disabled = false;
-    return;
-  }
+  try {
+    // ① ID 중복 확인
+    const { data: existId, error: idErr } = await _sb
+      .from('profiles')
+      .select('user_id')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-  // profiles 테이블에 저장 (RLS 비활성화 상태이므로 바로 insert)
-  if (data.user) {
+    if (idErr)    throw new Error('중복 확인 오류: ' + idErr.message);
+    if (existId)  throw new Error('이미 사용 중인 ID입니다.');
+
+    // ② 이메일 중복 확인
+    const { data: existEmail, error: emailErr } = await _sb
+      .from('profiles')
+      .select('email')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (emailErr)    throw new Error('중복 확인 오류: ' + emailErr.message);
+    if (existEmail)  throw new Error('이미 가입된 이메일입니다.');
+
+    // ③ Supabase Auth 계정 생성
+    const { data: authData, error: authErr } = await _sb.auth.signUp({
+      email,
+      password: pw,
+    });
+
+    if (authErr) throw new Error('계정 생성 실패: ' + authErr.message);
+    if (!authData.user) throw new Error('계정 생성에 실패했습니다. 다시 시도해주세요.');
+
+    // ④ profiles 테이블에 INSERT
     const { error: insertErr } = await _sb.from('profiles').insert({
-      id:          data.user.id,
+      id:          authData.user.id,
       email:       email,
       name:        name,
       affiliation: affiliation,
       user_id:     userId,
-      role:        'user'
+      role:        'user',
     });
-    if (insertErr) {
-      showAuthStatus('signup-status','error','프로필 저장 실패: ' + insertErr.message);
-      signupBtn.disabled = false;
-      return;
-    }
-  }
 
-  showAuthStatus('signup-status','success','회원가입 완료! 로그인해주세요.');
-  signupBtn.disabled = false;
-  setTimeout(() => switchAuthTab('login'), 1500);
+    if (insertErr) throw new Error('프로필 저장 실패: ' + insertErr.message);
+
+    showAuthStatus('signup-status', 'success', '회원가입 완료! 로그인해주세요.');
+    setTimeout(() => switchAuthTab('login'), 1500);
+
+  } catch (e) {
+    showAuthStatus('signup-status', 'error', e.message);
+    signupBtn.disabled = false;
+  }
 }
 
-// ── 앱 진입 ──
+// ════════════════════════════════════════════
+//  앱 진입 (로그인 성공 후 공통 처리)
+// ════════════════════════════════════════════
 async function enterApp(user) {
-  const { data: profile } = await _sb
-    .from('profiles')
-    .select('*')
-    .eq('id', user.id)
-    .single();
+  try {
+    const { data: profile, error } = await _sb
+      .from('profiles')
+      .select('*')
+      .eq('id', user.id)
+      .single();
 
-  const name        = profile?.name        || user.email.split('@')[0];
-  const affiliation = profile?.affiliation || '';
-  const role        = profile?.role        || 'user';
+    if (error) throw new Error(error.message);
 
-  // 사이드바 사용자 정보 반영
-  const avatarEl = document.querySelector('.avatar');
-  const nameEl   = document.querySelector('.user-chip b');
-  const roleEl   = document.querySelector('.user-chip small');
-  if (avatarEl) avatarEl.textContent = name.slice(0,1).toUpperCase();
-  if (nameEl)   nameEl.textContent   = name;
-  if (roleEl)   roleEl.textContent   = affiliation + ' · ' + (role === 'admin' ? 'Admin' : 'Standard');
+    const name        = profile.name        || user.email.split('@')[0];
+    const affiliation = profile.affiliation || '';
+    const role        = profile.role        || 'user';
 
-  // 로그아웃 버튼 추가
-  const footer = document.querySelector('.sidebar-footer');
-  if (footer && !footer.querySelector('.logout-btn')) {
-    const btn = document.createElement('button');
-    btn.className = 'btn line logout-btn';
-    btn.style.cssText = 'width:100%;margin-top:10px;background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.3)';
-    btn.textContent = '로그아웃';
-    btn.onclick = handleLogout;
-    footer.appendChild(btn);
+    // 사이드바 사용자 정보 업데이트
+    const avatarEl = document.querySelector('.avatar');
+    const nameEl   = document.querySelector('.user-chip b');
+    const roleEl   = document.querySelector('.user-chip small');
+    if (avatarEl) avatarEl.textContent = name.slice(0, 1).toUpperCase();
+    if (nameEl)   nameEl.textContent   = name;
+    if (roleEl)   roleEl.textContent   = affiliation + ' · ' + (role === 'admin' ? 'Admin' : 'Standard');
+
+    // 로그아웃 버튼
+    const footer = document.querySelector('.sidebar-footer');
+    if (footer && !footer.querySelector('.logout-btn')) {
+      const btn = document.createElement('button');
+      btn.className = 'btn line logout-btn';
+      btn.style.cssText = 'width:100%;margin-top:10px;background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.3)';
+      btn.textContent = '로그아웃';
+      btn.addEventListener('click', handleLogout);
+      footer.appendChild(btn);
+    }
+
+    // 관리자 메뉴
+    if (role === 'admin') showAdminNav();
+
+    // 오버레이 숨기기
+    document.getElementById('auth-overlay').classList.add('hidden');
+
+  } catch (e) {
+    // 프로필 조회 실패 시 로그아웃 처리
+    await _sb.auth.signOut();
+    showAuthStatus('login-status', 'error', '프로필 정보를 불러올 수 없습니다: ' + e.message);
   }
-
-  // 관리자 메뉴
-  if (role === 'admin') showAdminNav();
-
-  // 앱 화면 표시
-  document.getElementById('auth-overlay').classList.add('hidden');
 }
 
-// ── 로그아웃 ──
+// ════════════════════════════════════════════
+//  로그아웃
+// ════════════════════════════════════════════
 async function handleLogout() {
   await _sb.auth.signOut();
-  const adminNav = document.getElementById('admin-nav');
-  if (adminNav) adminNav.remove();
-  const logoutBtn = document.querySelector('.logout-btn');
-  if (logoutBtn) logoutBtn.remove();
+  document.querySelector('.logout-btn')?.remove();
+  document.getElementById('admin-nav')?.remove();
   document.getElementById('auth-overlay').classList.remove('hidden');
   document.getElementById('login-id').value = '';
   document.getElementById('login-pw').value = '';
-  document.getElementById('login-status').className = 'auth-status';
-  document.getElementById('login-btn').disabled = false;
+  clearAuthStatus();
   switchAuthTab('login');
 }
 
-// ── 관리자 메뉴 ──
+// ════════════════════════════════════════════
+//  관리자 메뉴
+// ════════════════════════════════════════════
 function showAdminNav() {
   if (document.getElementById('admin-nav')) return;
   const nav = document.querySelector('.sidebar nav');
@@ -571,18 +628,28 @@ function showAdminNav() {
   });
 }
 
-// ── 세션 복원 ──
+// ════════════════════════════════════════════
+//  세션 복원 (페이지 새로고침 시 로그인 유지)
+// ════════════════════════════════════════════
 (async function restoreSession() {
   const { data: { session } } = await _sb.auth.getSession();
-  if (session?.user) await enterApp(session.user);
+  if (session?.user) {
+    await enterApp(session.user);
+  }
 })();
 
-// ── 엔터키 ──
+// ════════════════════════════════════════════
+//  엔터키 로그인/회원가입
+// ════════════════════════════════════════════
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
-  if (document.getElementById('auth-overlay').classList.contains('hidden')) return;
-  if (document.getElementById('panel-login').classList.contains('active')) handleLogin();
-  else handleSignup();
+  const overlay = document.getElementById('auth-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  if (document.getElementById('panel-login').classList.contains('active')) {
+    handleLogin();
+  } else {
+    handleSignup();
+  }
 });
 </script>
 </body>
