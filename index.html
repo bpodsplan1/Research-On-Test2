@@ -275,7 +275,27 @@
 </main>
 </div>
 <div class="toast" id="toast"></div>
+<!-- Supabase CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+// ══════════════════════════════════════════
+// Supabase 초기화 (로그인 파일과 합칠 때 이 블록 제거)
+// ══════════════════════════════════════════
+const { createClient } = supabase;
+const _sb = createClient(
+  'https://aiftpranlfudkbobxyll.supabase.co',
+  'sb_publishable_qnUFAiMRiJNzARP_FE12Bg_3zFEdc94'
+);
+
+// 현재 로그인 유저 ID (로그인 파일과 합칠 때 enterApp()에서 설정됨)
+let _currentUserId = null;
+async function getUid(){
+  if(_currentUserId) return _currentUserId;
+  const { data:{ session } } = await _sb.auth.getSession();
+  _currentUserId = session?.user?.id || null;
+  return _currentUserId;
+}
+
 // ══════════════════════════════════════════
 // ★ n8n Webhook URL 설정 — 계정 설정 페이지에서도 변경 가능 ★
 // ══════════════════════════════════════════
@@ -497,22 +517,57 @@ async function simulateRun(triggerBtn){
 // ══════════════════════════════════════════
 // 관심 키워드 / 저장 자료 / 키워드 세트
 // ══════════════════════════════════════════
-let subscribedKws = JSON.parse(localStorage.getItem('ro_subscribed')||'[]');
-let savedDocs = JSON.parse(localStorage.getItem('ro_saved')||'[]');
-let keywordSets = JSON.parse(localStorage.getItem('ro_sets')||'null') || [
-  {name:'외국인 임직원 정착지원', core:['온보딩','리텐션'], ext:['국내','대기업','사례','뉴스']},
-  {name:'AI 자동화 트렌드', core:['AI 에이전트','RAG'], ext:['글로벌','보고서','인사이트']}
-];
-function persist(){
-  localStorage.setItem('ro_subscribed', JSON.stringify(subscribedKws));
-  localStorage.setItem('ro_saved', JSON.stringify(savedDocs));
-  localStorage.setItem('ro_sets', JSON.stringify(keywordSets));
+// ── Supabase 연동 데이터 (로컬 캐시) ──
+let subscribedKws = [];
+let savedDocs = [];
+let keywordSets = [];
+
+// ── 초기 데이터 로드 (페이지 로드 시 호출) ──
+async function loadUserData(){
+  const uid = await getUid();
+  if(!uid){ console.log('[SB] 비로그인 상태 - 데이터 로드 생략'); return; }
+
+  // 관심 키워드
+  const { data: sub } = await _sb.from('subscribed_keywords').select('keyword').eq('profile_id', uid);
+  subscribedKws = (sub||[]).map(r=>r.keyword);
+
+  // 저장 자료함
+  const { data: docs } = await _sb.from('saved_docs').select('*').eq('profile_id', uid).order('created_at', {ascending:false});
+  savedDocs = (docs||[]).map(r=>({ id:r.id, title:r.title, body:r.body, type:r.type, badge:r.badge||'blue' }));
+
+  // 키워드 세트
+  const { data: sets } = await _sb.from('keyword_sets').select('*').eq('profile_id', uid).order('created_at', {ascending:true});
+  keywordSets = (sets||[]).map(r=>({ id:r.id, name:r.name, core:r.core||[], ext:r.ext||[] }));
+
+  // 검색 히스토리
+  const { data: hist } = await _sb.from('search_history').select('*').eq('profile_id', uid).order('searched_at', {ascending:false}).limit(50);
+  searchHistory = (hist||[]).map(r=>({ id:r.id, kw:r.keyword, date:r.date_str, time:r.time_str, count:r.search_count }));
+
+  // 리서치 결과 히스토리
+  const { data: rh } = await _sb.from('research_history').select('*').eq('profile_id', uid).order('searched_at', {ascending:false}).limit(30);
+  resultHistory = (rh||[]).map(r=>({ id:r.id, kw:r.keyword, front:r.front||[], core:r.core||[], back:r.back||[], date:r.date_str, time:r.time_str, docs:r.docs||[] }));
+
+  // 뉴스 요약 히스토리
+  const { data: ns } = await _sb.from('news_summary_history').select('*').eq('profile_id', uid).order('created_at', {ascending:false}).limit(20);
+  nsHistory = (ns||[]).map(r=>({ id:r.id, url:r.url, title:r.title||r.url, summary:r.summary, ts:r.created_at }));
+
+  renderDashboard();
+  console.log('[SB] 사용자 데이터 로드 완료');
 }
-function toggleSubscribe(kw){
+async function toggleSubscribe(kw){
+  const uid = await getUid();
+  if(!uid){ showToast('로그인이 필요합니다.'); return; }
   const i = subscribedKws.indexOf(kw);
-  if(i>=0){ subscribedKws.splice(i,1); showToast(`"${kw}" 관심 키워드에서 제거되었습니다.`); }
-  else { subscribedKws.push(kw); showToast(`"${kw}" 관심 키워드에 추가되었습니다.`); }
-  persist(); renderKeywordsPage(); renderDashboard();
+  if(i>=0){
+    subscribedKws.splice(i,1);
+    await _sb.from('subscribed_keywords').delete().eq('profile_id', uid).eq('keyword', kw);
+    showToast('"' + kw + '" 관심 키워드에서 제거되었습니다.');
+  } else {
+    subscribedKws.push(kw);
+    await _sb.from('subscribed_keywords').insert({ profile_id:uid, keyword:kw });
+    showToast('"' + kw + '" 관심 키워드에 추가되었습니다.');
+  }
+  renderKeywordsPage(); renderDashboard();
 }
 function getCoreOrderIndex(coreArr){
   let best = Infinity;
@@ -540,9 +595,11 @@ function renderKeywordsPage(){
 }
 function viewResearchKeyword(kw){ showPage('results'); viewResultSession(kw); }
 function researchKeywordResearch(kw){ doGlobalSearch(kw); }
-function deleteResearchKeyword(kw){
+async function deleteResearchKeyword(kw){
+  const uid = await getUid(); if(!uid) return;
+  const entry = resultHistory.find(h=>h.kw===kw);
+  if(entry?.id) await _sb.from('research_history').delete().eq('id', entry.id).eq('profile_id', uid);
   resultHistory = resultHistory.filter(h=>h.kw!==kw);
-  localStorage.setItem('ro_result_history', JSON.stringify(resultHistory));
   renderKeywordsPage();
   showToast('키워드 기록이 삭제되었습니다.');
 }
@@ -552,7 +609,13 @@ function searchKeywordSet(i){
   const q = [...front, ...s.core, ...back].join(' ');
   doGlobalSearch(q, { front, core:[...s.core], back });
 }
-function deleteKeywordSet(i){ keywordSets.splice(i,1); persist(); renderKeywordsPage(); showToast('키워드 세트가 삭제되었습니다.'); }
+async function deleteKeywordSet(i){
+  const uid = await getUid(); if(!uid) return;
+  const set = keywordSets[i];
+  if(set?.id) await _sb.from('keyword_sets').delete().eq('id', set.id).eq('profile_id', uid);
+  keywordSets.splice(i,1);
+  renderKeywordsPage(); showToast('키워드 세트가 삭제되었습니다.');
+}
 function renderSavedPage(){
   $('#savedCountBadge').textContent = savedDocs.length + ' Saved';
   $('#savedGrid').innerHTML = savedDocs.length ? savedDocs.map((d,i)=>`
@@ -560,7 +623,13 @@ function renderSavedPage(){
     <button class="btn line" type="button" onclick="event.stopPropagation();deleteSavedDoc(${i})">삭제</button></div>
   `).join('') : '<div class="empty-state"><h3>저장한 자료가 없어요</h3><p>리서치 결과나 뉴스 요약에서 저장해보세요.</p></div>';
 }
-function deleteSavedDoc(i){ savedDocs.splice(i,1); persist(); renderSavedPage(); showToast('자료가 삭제되었습니다.'); }
+async function deleteSavedDoc(i){
+  const uid = await getUid(); if(!uid) return;
+  const doc = savedDocs[i];
+  if(doc?.id) await _sb.from('saved_docs').delete().eq('id', doc.id).eq('profile_id', uid);
+  savedDocs.splice(i,1);
+  renderSavedPage(); showToast('자료가 삭제되었습니다.');
+}
 
 function renderDashboard(){
   $('#statKeywordSets').textContent = keywordSets.length;
@@ -579,36 +648,42 @@ function renderDashboard(){
 let resultDocs = [];
 let currentResultKw = '';
 const RESULT_HIST_MAX = 30;
-let resultHistory = JSON.parse(localStorage.getItem('ro_result_history')||'[]');
+let resultHistory = []; // loadUserData()에서 Supabase로 채워짐
 
 function generateFallbackResults(kw){
   return [{
-    title: `${kw} 검색 결과를 가져오지 못했습니다`,
+    title: kw + ' 검색 결과를 가져오지 못했습니다',
     desc: 'n8n 연동이 안 되어 있거나 워크플로우가 비활성 상태일 수 있어요.',
     source: '연동 필요',
     score: 0,
     status: 'fail',
-    body: `"${kw}" 검색 결과를 가져오지 못했습니다.\n\n가능한 원인:\n• 계정 설정에 뉴스 기사 검색 Webhook이 입력되지 않음\n• n8n 워크플로우가 비활성(Inactive) 상태\n• Tavily API 키가 만료되었거나 호출 한도 초과\n\n계정 설정에서 뉴스 기사 검색 Webhook 주소를 확인해주세요.`
+    body: '"' + kw + '" 검색 결과를 가져오지 못했습니다.\n\n가능한 원인:\n• 계정 설정에 뉴스 기사 검색 Webhook이 입력되지 않음\n• n8n 워크플로우가 비활성(Inactive) 상태\n• Tavily API 키가 만료되었거나 호출 한도 초과\n\n계정 설정에서 뉴스 기사 검색 Webhook 주소를 확인해주세요.'
   }];
 }
 
-function saveResultSession(kw, parts){
+async function saveResultSession(kw, parts){
+  const uid = await getUid(); if(!uid) return;
   const now = new Date();
   const p = parts || { front:[], core:[kw], back:[] };
-  const entry = {
-    kw,
-    front: [...p.front],
-    core: [...p.core],
-    back: [...p.back],
-    date: now.toLocaleDateString('ko-KR'),
-    time: now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}),
-    docs: resultDocs.map(d=>({...d}))
-  };
-  const idx = resultHistory.findIndex(h=>h.kw===kw);
-  if(idx>=0) resultHistory.splice(idx,1);
+  const dateStr = now.toLocaleDateString('ko-KR');
+  const timeStr = now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+  const entry = { kw, front:[...p.front], core:[...p.core], back:[...p.back], date:dateStr, time:timeStr, docs:resultDocs.map(d=>({...d})) };
+
+  // 같은 키워드 기존 항목 제거 후 맨 앞에 추가
+  const existIdx = resultHistory.findIndex(h=>h.kw===kw);
+  let existId = null;
+  if(existIdx>=0){ existId = resultHistory[existIdx].id; resultHistory.splice(existIdx,1); }
   resultHistory.unshift(entry);
   if(resultHistory.length > RESULT_HIST_MAX) resultHistory.length = RESULT_HIST_MAX;
-  localStorage.setItem('ro_result_history', JSON.stringify(resultHistory));
+
+  // Supabase UPSERT
+  const row = { profile_id:uid, keyword:kw, front:p.front, core:p.core, back:p.back, date_str:dateStr, time_str:timeStr, docs:resultDocs.map(d=>({...d})) };
+  if(existId){
+    await _sb.from('research_history').update(row).eq('id', existId);
+  } else {
+    const { data } = await _sb.from('research_history').insert(row).select().single();
+    if(data) resultHistory[0].id = data.id;
+  }
 }
 
 async function generateResultsFor(kw, parts){
@@ -660,10 +735,13 @@ function renderResults(kw){
     <td>${d.status==='success'?`<button class="btn soft" type="button" onclick="saveResultDoc(${i})">저장</button>`:`<button class="btn line" type="button" onclick="retryResultDoc(${i})">재수집</button>`}</td></tr>
   `).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:30px">표시할 결과가 없습니다.</td></tr>';
 }
-function saveResultDoc(i){
+async function saveResultDoc(i){
+  const uid = await getUid(); if(!uid){ showToast('로그인이 필요합니다.'); return; }
   const d = resultDocs[i]; if(!d) return;
-  savedDocs.unshift({ title:d.title, body:d.body, type:'리서치 결과', badge:'blue' });
-  persist(); showToast('저장되었습니다.');
+  const row = { profile_id:uid, title:d.title, body:d.body, type:'리서치 결과', badge:'blue' };
+  const { data } = await _sb.from('saved_docs').insert(row).select().single();
+  savedDocs.unshift({ id:data?.id, ...row });
+  showToast('저장되었습니다.');
 }
 async function retryResultDoc(i){
   showToast('다시 검색 중입니다...');
@@ -672,11 +750,14 @@ async function retryResultDoc(i){
   await generateResultsFor(currentResultKw, parts);
   renderResults(currentResultKw);
 }
-function saveAllResults(){
+async function saveAllResults(){
   if(resultDocs.length===0){ showToast('저장할 결과가 없습니다.'); return; }
-  let n=0;
-  resultDocs.forEach(d=>{ if(d.status==='success'){ savedDocs.unshift({title:d.title, body:d.body, type:'리서치 결과', badge:'blue'}); n++; } });
-  persist(); showToast(`${n}건이 저장되었습니다.`);
+  const uid = await getUid(); if(!uid){ showToast('로그인이 필요합니다.'); return; }
+  const rows = resultDocs.filter(d=>d.status==='success').map(d=>({ profile_id:uid, title:d.title, body:d.body, type:'리서치 결과', badge:'blue' }));
+  if(!rows.length){ showToast('저장할 성공 결과가 없습니다.'); return; }
+  const { data } = await _sb.from('saved_docs').insert(rows).select();
+  (data||[]).reverse().forEach(r=>savedDocs.unshift({ id:r.id, profile_id:uid, title:r.title, body:r.body, type:r.type, badge:r.badge }));
+  showToast(rows.length + '건이 저장되었습니다.');
 }
 function openDocModal(i, kind){
   let doc;
@@ -711,7 +792,7 @@ async function doGlobalSearch(kw, parts){
 // ══════════════════════════════════════════
 // 뉴스 기사 요약 (n8n 연동)
 // ══════════════════════════════════════════
-let nsHistory = JSON.parse(localStorage.getItem('ro_ns_history')||'[]');
+let nsHistory = []; // loadUserData()에서 Supabase로 채워짐
 let currentNsSummary = '';
 let currentNsUrl = '';
 let nsArticles = [];
@@ -807,9 +888,15 @@ async function summarizeNews(urlArg, titleArg){
   $('#nsResultBody').textContent = summary;
 
   const hostname = url.match(/https?:\/\/([^/]+)/)?.[1] || url;
-  nsHistory.unshift({ url, hostname, summary, date: new Date().toLocaleDateString('ko-KR') });
+  const newEntry = { url, hostname, summary, date: new Date().toLocaleDateString('ko-KR') };
+  nsHistory.unshift(newEntry);
   if(nsHistory.length > 10) nsHistory.pop();
-  localStorage.setItem('ro_ns_history', JSON.stringify(nsHistory));
+  // Supabase 저장
+  const uid = await getUid();
+  if(uid){
+    const { data } = await _sb.from('news_summary_history').insert({ profile_id:uid, url, title:hostname, summary }).select().single();
+    if(data) nsHistory[0].id = data.id;
+  }
   renderNsHistory();
 
   btn.disabled = false; btn.innerHTML = origBtnText;
@@ -834,67 +921,57 @@ function loadNsHistory(i){
   $('#nsResultCard').style.display = 'block';
   $('#nsResultBody').textContent = h.summary; $('#nsResultUrl').textContent = h.url;
 }
-function clearNsHistory(){ nsHistory = []; localStorage.setItem('ro_ns_history','[]'); renderNsHistory(); $('#nsResultCard').style.display='none'; }
+async function clearNsHistory(){
+  const uid = await getUid();
+  if(uid) await _sb.from('news_summary_history').delete().eq('profile_id', uid);
+  nsHistory = []; renderNsHistory(); $('#nsResultCard').style.display='none';
+}
 function copyNsSummary(){ if(!currentNsSummary){showToast('먼저 요약을 실행해주세요.');return;} navigator.clipboard?.writeText(currentNsSummary).then(()=>showToast('복사되었습니다.')).catch(()=>showToast('복사 완료')); }
-function saveNsSummary(){ if(!currentNsSummary){showToast('먼저 요약을 실행해주세요.');return;} savedDocs.unshift({title:'[뉴스 요약] '+(currentNsUrl.match(/https?:\/\/([^/]+)/)?.[1]||currentNsUrl), body:currentNsSummary, type:'뉴스 요약', badge:'blue'}); persist(); showToast('저장되었습니다.'); }
+async function saveNsSummary(){
+  if(!currentNsSummary){ showToast('먼저 요약을 실행해주세요.'); return; }
+  const uid = await getUid(); if(!uid){ showToast('로그인이 필요합니다.'); return; }
+  const title = '[뉴스 요약] ' + (currentNsUrl.match(/https?:\/\/([^/]+)/)?.[1]||currentNsUrl);
+  const row = { profile_id:uid, title, body:currentNsSummary, type:'뉴스 요약', badge:'blue' };
+  const { data } = await _sb.from('saved_docs').insert(row).select().single();
+  savedDocs.unshift({ id:data?.id, ...row });
+  showToast('저장되었습니다.');
+}
 
 // ══════════════════════════════════════════
 // 검색 히스토리 + Google Sheets 연동
 // ══════════════════════════════════════════
-let searchHistory = JSON.parse(localStorage.getItem('ro_search_history')||'[]');
+let searchHistory = []; // loadUserData()에서 Supabase로 채워짐
 let histFilterMode = 'all';
 const HIST_MAX = 50;
 
-function saveSearchHistory(q){
+async function saveSearchHistory(q){
+  const uid = await getUid(); if(!uid) return;
   const now = new Date();
   const dateStr = now.toLocaleDateString('ko-KR');
   const timeStr = now.toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit'});
   const idx = searchHistory.findIndex(h=>h.kw===q);
   if(idx !== -1){
+    // 기존 항목 카운트 증가
     const item = {...searchHistory[idx], count:searchHistory[idx].count+1, date:dateStr, time:timeStr};
     searchHistory.splice(idx,1); searchHistory.unshift(item);
+    if(item.id) await _sb.from('search_history').update({ search_count:item.count, date_str:dateStr, time_str:timeStr }).eq('id', item.id);
   } else {
-    searchHistory.unshift({kw:q, date:dateStr, time:timeStr, count:1});
+    const newItem = { kw:q, date:dateStr, time:timeStr, count:1 };
+    searchHistory.unshift(newItem);
     if(searchHistory.length > HIST_MAX) searchHistory.pop();
+    const { data } = await _sb.from('search_history').insert({ profile_id:uid, keyword:q, date_str:dateStr, time_str:timeStr, search_count:1 }).select().single();
+    if(data) searchHistory[0].id = data.id;
   }
-  localStorage.setItem('ro_search_history', JSON.stringify(searchHistory));
-  saveHistoryToSheets(q);
+  renderDashboard();
 }
-async function saveHistoryToSheets(q){
-  try {
-    await fetch(N8N_HISTORY_URL, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'save', keyword:q, name:$('#footerName')?.textContent||'이트너스 사용자', dept:'리서치팀', userId:'user_01', resultCount:0 })
-    });
-  } catch(e){ console.log('히스토리 저장 실패 (n8n 미연결):', e.message); }
-}
+// n8n Sheets 함수는 Supabase로 대체됨 (하위 호환 유지용 빈 함수)
+async function saveHistoryToSheets(q){ /* Supabase로 대체 */ }
 async function loadHistoryFromSheets(){
-  const btn = $('#sheetsLoadBtn'); if(btn){ btn.disabled=true; btn.innerHTML='<span class="streaming-dot"></span>불러오는 중...'; }
-  try {
-    const resp = await fetch(N8N_HISTORY_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'load'}) });
-    const data = await resp.json();
-    if(data.success && data.history){
-      data.history.forEach(row=>{
-        if(!row.keyword) return;
-        if(!searchHistory.find(h=>h.kw===row.keyword)){
-          searchHistory.push({kw:row.keyword, date:(row.datetimeStr||'').split(' ')[0]||'', time:(row.datetimeStr||'').split(' ')[1]||'', count:1});
-        }
-      });
-      localStorage.setItem('ro_search_history', JSON.stringify(searchHistory));
-      renderHistoryPage(); renderDashboard();
-      showSheetsStatus('success', `Google Sheets에서 ${data.total}건을 불러왔습니다.`);
-    } else throw new Error('데이터 없음');
-  } catch(e){ showSheetsStatus('error', 'n8n 연결이 필요합니다. 계정 설정에서 Webhook URL을 확인해주세요.'); }
-  if(btn){ btn.disabled=false; btn.innerHTML='Sheets 동기화'; }
+  // Supabase 연동으로 전환 - 로그인 시 자동 로드됨
+  showSheetsStatus('success', 'Supabase에서 자동 로드됩니다. 로그인하면 기록이 복원됩니다.');
 }
 async function exportHistoryToSheets(){
-  if(searchHistory.length===0){ showToast('내보낼 기록이 없습니다.'); return; }
-  showSheetsStatus('loading', `${searchHistory.length}건을 Google Sheets에 저장 중...`);
-  let success=0;
-  for(const h of searchHistory){
-    try{ await fetch(N8N_HISTORY_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save',keyword:h.kw,name:'이트너스 사용자',dept:'리서치팀',userId:'user_01',resultCount:0})}); success++; }catch(e){}
-  }
-  showSheetsStatus('success', `${success}건이 저장되었습니다.`);
+  showSheetsStatus('success', 'Supabase에 자동 저장됩니다. 별도 내보내기 불필요합니다.');
 }
 function showSheetsStatus(type, msg){
   const el = $('#sheetsStatus'); if(!el) return;
@@ -936,15 +1013,19 @@ function renderHistoryPage(){
     </div>`;
   }).join('');
 }
-function deleteHistByKw(kw){
+async function deleteHistByKw(kw){
+  const uid = await getUid(); if(!uid) return;
+  const entry = searchHistory.find(h=>h.kw===kw);
+  if(entry?.id) await _sb.from('search_history').delete().eq('id', entry.id).eq('profile_id', uid);
   searchHistory = searchHistory.filter(h=>h.kw!==kw);
-  localStorage.setItem('ro_search_history', JSON.stringify(searchHistory));
   renderHistoryPage(); renderDashboard();
-  showToast(`"${kw}" 기록이 삭제되었습니다.`);
+  showToast('"' + kw + '" 기록이 삭제되었습니다.');
 }
-function clearAllHistory(){
+async function clearAllHistory(){
   if(searchHistory.length===0){ showToast('삭제할 기록이 없습니다.'); return; }
-  searchHistory = []; localStorage.setItem('ro_search_history','[]');
+  const uid = await getUid(); if(!uid) return;
+  await _sb.from('search_history').delete().eq('profile_id', uid);
+  searchHistory = [];
   renderHistoryPage(); renderDashboard();
   showToast('검색 기록이 모두 삭제되었습니다.');
 }
@@ -1057,6 +1138,7 @@ function bindEvents(){
 
 async function init(){
   renderCore(); renderExt(); updateSelection(); setStep(0); renderExcludeDomainGroups(); updatePayload(); initPool(); bindEvents();
+  // Supabase에서 사용자 데이터 로드 (로그인 상태일 때만 실행됨)
   await loadUserData();
   renderDashboard();
 }
