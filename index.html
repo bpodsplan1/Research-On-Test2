@@ -1362,6 +1362,40 @@ async function enterApp(user){
 async function handleLogout(){
   await _sb.auth.signOut();
   _currentUserId = null;
+
+  // ── 메모리 변수 전체 초기화 ──
+  subscribedKws = [];
+  savedDocs     = [];
+  keywordSets   = [];
+  searchHistory = [];
+  resultHistory = [];
+  nsHistory     = [];
+  resultDocs    = [];
+  currentResultKw = '';
+
+  // ── 화면 초기화 ──
+  // 리서치 결과
+  const resultsBody = document.getElementById('resultsBody');
+  if(resultsBody) resultsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:30px">로그인 후 검색하면 결과가 여기에 표시됩니다.</td></tr>';
+  const resultsSub = document.getElementById('resultsSubtitle');
+  if(resultsSub) resultsSub.textContent = '';
+
+  // 저장 자료함
+  const savedGrid = document.getElementById('savedGrid');
+  if(savedGrid) savedGrid.innerHTML = '<div class="empty-state"><h3>저장한 자료가 없어요</h3><p>리서치 결과나 뉴스 요약에서 저장해보세요.</p></div>';
+
+  // 검색 히스토리
+  const histList = document.getElementById('histList');
+  if(histList) histList.innerHTML = '<div class="empty-state"><h3>검색 기록이 없어요</h3><p>키워드를 검색하면 여기에 기록됩니다.</p></div>';
+
+  // 뉴스 요약 히스토리
+  const nsHistList = document.getElementById('nsHistoryList');
+  if(nsHistList) nsHistList.innerHTML = '';
+
+  // 대시보드
+  renderDashboard();
+
+  // ── UI 초기화 ──
   document.getElementById('admin-nav')?.remove();
   document.getElementById('nav-admin-request')?.style.setProperty('display','none');
   const footerNameEl   = document.getElementById('footerName');
