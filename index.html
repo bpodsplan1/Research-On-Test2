@@ -381,13 +381,10 @@ const _sb = createClient(
   'sb_publishable_qnUFAiMRiJNzARP_FE12Bg_3zFEdc94'
 );
 
-// 현재 로그인 유저 ID (로그인 파일과 합칠 때 enterApp()에서 설정됨)
-let _currentUserId = null;
+// 현재 로그인 유저 ID — 캐싱하지 않고 항상 실시간 세션에서 조회 (계정 전환 시 이전 ID가 남는 버그 방지)
 async function getUid(){
-  if(_currentUserId) return _currentUserId;
   const { data:{ session } } = await _sb.auth.getSession();
-  _currentUserId = session?.user?.id || null;
-  return _currentUserId;
+  return session?.user?.id || null;
 }
 
 // ══════════════════════════════════════════
@@ -617,10 +614,49 @@ let subscribedKws = [];
 let savedDocs = [];
 let keywordSets = [];
 
-// ── 초기 데이터 로드 (페이지 로드 시 호출) ──
+// ── 앱 상태 전체 초기화 (메모리 + 화면) ──
+function resetAppState(){
+  // 메모리 변수 초기화
+  subscribedKws = [];
+  savedDocs     = [];
+  keywordSets   = [];
+  searchHistory = [];
+  resultHistory = [];
+  nsHistory     = [];
+  resultDocs    = [];
+  currentResultKw = '';
+  currentNsSummary = '';
+  currentNsUrl = '';
+
+  // 화면 초기화
+  const resultsBody = document.getElementById('resultsBody');
+  if(resultsBody) resultsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:30px">로그인 후 검색하면 결과가 여기에 표시됩니다.</td></tr>';
+  const resultsSub = document.getElementById('resultsSubtitle');
+  if(resultsSub) resultsSub.textContent = '새 리서치 만들기에서 검색했던 키워드별 결과를 언제든지 다시 확인할 수 있습니다.';
+  const nsResultCard = document.getElementById('nsResultCard');
+  if(nsResultCard) nsResultCard.style.display = 'none';
+}
+
+// ── 모든 페이지 재렌더링 (현재 메모리 데이터 기준) ──
+function renderAllPages(){
+  try{ renderDashboard(); }catch(e){}
+  try{ renderSavedPage(); }catch(e){}
+  try{ renderHistoryPage(); }catch(e){}
+  try{ renderKeywordsPage(); }catch(e){}
+  try{ renderNsHistory(); }catch(e){}
+  try{
+    // 리서치 결과: 현재 계정 히스토리가 있으면 최신 것, 없으면 빈 화면
+    if(resultHistory.length){ viewResultSession(resultHistory[0].kw); }
+  }catch(e){}
+}
+
+// ── 초기 데이터 로드 ──
 async function loadUserData(){
+  // 이전 계정 데이터가 남지 않도록 항상 초기화 후 시작
+  resetAppState();
+
   const uid = await getUid();
-  if(!uid){ console.log('[SB] 비로그인 상태 - 데이터 로드 생략'); return; }
+  if(!uid){ console.log('[SB] 비로그인 상태 - 데이터 로드 생략'); renderAllPages(); return; }
 
   // 관심 키워드
   const { data: sub } = await _sb.from('subscribed_keywords').select('keyword').eq('profile_id', uid);
@@ -642,12 +678,19 @@ async function loadUserData(){
   const { data: rh } = await _sb.from('research_history').select('*').eq('profile_id', uid).order('searched_at', {ascending:false}).limit(30);
   resultHistory = (rh||[]).map(r=>({ id:r.id, kw:r.keyword, front:r.front||[], core:r.core||[], back:r.back||[], date:r.date_str, time:r.time_str, docs:r.docs||[] }));
 
-  // 뉴스 요약 히스토리
+  // 뉴스 요약 히스토리 (renderNsHistory가 쓰는 hostname/date 필드로 매핑)
   const { data: ns } = await _sb.from('news_summary_history').select('*').eq('profile_id', uid).order('created_at', {ascending:false}).limit(20);
-  nsHistory = (ns||[]).map(r=>({ id:r.id, url:r.url, title:r.title||r.url, summary:r.summary, ts:r.created_at }));
+  nsHistory = (ns||[]).map(r=>({
+    id: r.id,
+    url: r.url,
+    hostname: r.title || (r.url||'').match(/https?:\/\/([^/]+)/)?.[1] || r.url,
+    summary: r.summary,
+    date: r.created_at ? new Date(r.created_at).toLocaleDateString('ko-KR') : ''
+  }));
 
-  renderDashboard();
-  console.log('[SB] 사용자 데이터 로드 완료');
+  // 로드된 데이터로 모든 페이지 다시 그리기
+  renderAllPages();
+  console.log('[SB] 사용자 데이터 로드 완료 (uid: ' + uid + ')');
 }
 async function toggleSubscribe(kw){
   const uid = await getUid();
@@ -1228,8 +1271,8 @@ function bindEvents(){
 
 async function init(){
   renderCore(); renderExt(); updateSelection(); setStep(0); renderExcludeDomainGroups(); updatePayload(); initPool(); bindEvents();
-  // Supabase에서 사용자 데이터 로드 (로그인 상태일 때만 실행됨)
-  await loadUserData();
+  // 사용자 데이터 로드는 하단 인증 스크립트의 restoreSession → enterApp → loadUserData 단일 경로로만 실행
+  // (이중 로드로 인한 계정 데이터 꼬임 방지)
   renderDashboard();
 }
 document.addEventListener('DOMContentLoaded', init);
@@ -1345,13 +1388,10 @@ async function enterApp(user){
       if(navReq) navReq.style.display='';
       loadMyRequestStatus(profile.user_id);
     }
-    // 현재 유저 ID 캐시
-    _currentUserId = user.id;
     // 오버레이 숨기기
     document.getElementById('auth-overlay').classList.add('hidden');
-    // 사용자 데이터 로드
+    // 사용자 데이터 로드 (내부에서 상태 초기화 → 새 계정 데이터 로드 → 전체 페이지 재렌더링)
     await loadUserData();
-    renderDashboard();
   } catch(e){
     await _sb.auth.signOut();
     showAuthStatus('login-status','error','프로필 정보를 불러올 수 없습니다: '+e.message);
@@ -1361,39 +1401,10 @@ async function enterApp(user){
 // ── 로그아웃 ──
 async function handleLogout(){
   await _sb.auth.signOut();
-  _currentUserId = null;
 
-  // ── 메모리 변수 전체 초기화 ──
-  subscribedKws = [];
-  savedDocs     = [];
-  keywordSets   = [];
-  searchHistory = [];
-  resultHistory = [];
-  nsHistory     = [];
-  resultDocs    = [];
-  currentResultKw = '';
-
-  // ── 화면 초기화 ──
-  // 리서치 결과
-  const resultsBody = document.getElementById('resultsBody');
-  if(resultsBody) resultsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:30px">로그인 후 검색하면 결과가 여기에 표시됩니다.</td></tr>';
-  const resultsSub = document.getElementById('resultsSubtitle');
-  if(resultsSub) resultsSub.textContent = '';
-
-  // 저장 자료함
-  const savedGrid = document.getElementById('savedGrid');
-  if(savedGrid) savedGrid.innerHTML = '<div class="empty-state"><h3>저장한 자료가 없어요</h3><p>리서치 결과나 뉴스 요약에서 저장해보세요.</p></div>';
-
-  // 검색 히스토리
-  const histList = document.getElementById('histList');
-  if(histList) histList.innerHTML = '<div class="empty-state"><h3>검색 기록이 없어요</h3><p>키워드를 검색하면 여기에 기록됩니다.</p></div>';
-
-  // 뉴스 요약 히스토리
-  const nsHistList = document.getElementById('nsHistoryList');
-  if(nsHistList) nsHistList.innerHTML = '';
-
-  // 대시보드
-  renderDashboard();
+  // ── 메모리 + 화면 전체 초기화 ──
+  resetAppState();
+  renderAllPages();
 
   // ── UI 초기화 ──
   document.getElementById('admin-nav')?.remove();
@@ -1503,6 +1514,17 @@ async function handleReject(requestId){
   const { data:{ session } } = await _sb.auth.getSession();
   if(session?.user) await enterApp(session.user);
 })();
+
+// ── 세션 변화 감지 (다른 탭에서 로그아웃/계정 전환 시에도 데이터 격리 유지) ──
+_sb.auth.onAuthStateChange((event)=>{
+  if(event === 'SIGNED_OUT'){
+    resetAppState();
+    renderAllPages();
+    document.getElementById('admin-nav')?.remove();
+    document.getElementById('nav-admin-request')?.style.setProperty('display','none');
+    document.getElementById('auth-overlay').classList.remove('hidden');
+  }
+});
 
 // ── 엔터키 ──
 document.addEventListener('keydown', e=>{
