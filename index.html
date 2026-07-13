@@ -807,17 +807,21 @@ async function saveResultSession(kw, parts){
   const timeStr = now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
   const entry = { kw, front:[...p.front], core:[...p.core], back:[...p.back], date:dateStr, time:timeStr, docs:resultDocs.map(d=>({...d})) };
 
-  // 같은 키워드 기존 항목 제거 후 맨 앞에 추가
+  // 같은 키워드 기존 항목 제거 후 맨 앞에 추가 (메모리)
   const existIdx = resultHistory.findIndex(h=>h.kw===kw);
-  let existId = null;
-  if(existIdx>=0){ existId = resultHistory[existIdx].id; resultHistory.splice(existIdx,1); }
+  if(existIdx>=0){ resultHistory.splice(existIdx,1); }
   resultHistory.unshift(entry);
   if(resultHistory.length > RESULT_HIST_MAX) resultHistory.length = RESULT_HIST_MAX;
 
-  // Supabase UPSERT
+  // Supabase UPSERT — 메모리에 남은 ID를 신뢰하지 않고,
+  // 반드시 "현재 로그인 계정(profile_id) + 키워드"로 DB에서 직접 조회 후 처리
+  // (이전 계정의 행을 덮어쓰는 계정 간 데이터 오염 방지)
   const row = { profile_id:uid, keyword:kw, front:p.front, core:p.core, back:p.back, date_str:dateStr, time_str:timeStr, docs:resultDocs.map(d=>({...d})) };
-  if(existId){
-    await _sb.from('research_history').update(row).eq('id', existId);
+  const { data: existRow } = await _sb.from('research_history')
+    .select('id').eq('profile_id', uid).eq('keyword', kw).maybeSingle();
+  if(existRow){
+    await _sb.from('research_history').update(row).eq('id', existRow.id).eq('profile_id', uid);
+    resultHistory[0].id = existRow.id;
   } else {
     const { data } = await _sb.from('research_history').insert(row).select().single();
     if(data) resultHistory[0].id = data.id;
@@ -1089,14 +1093,20 @@ async function saveSearchHistory(q){
   const timeStr = now.toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit'});
   const idx = searchHistory.findIndex(h=>h.kw===q);
   if(idx !== -1){
-    // 기존 항목 카운트 증가
     const item = {...searchHistory[idx], count:searchHistory[idx].count+1, date:dateStr, time:timeStr};
     searchHistory.splice(idx,1); searchHistory.unshift(item);
-    if(item.id) await _sb.from('search_history').update({ search_count:item.count, date_str:dateStr, time_str:timeStr }).eq('id', item.id);
   } else {
-    const newItem = { kw:q, date:dateStr, time:timeStr, count:1 };
-    searchHistory.unshift(newItem);
+    searchHistory.unshift({ kw:q, date:dateStr, time:timeStr, count:1 });
     if(searchHistory.length > HIST_MAX) searchHistory.pop();
+  }
+  // DB 반영 — 반드시 "현재 로그인 계정 + 키워드"로 직접 조회 후 처리 (타 계정 행 오염 방지)
+  const { data: existRow } = await _sb.from('search_history')
+    .select('id, search_count').eq('profile_id', uid).eq('keyword', q).maybeSingle();
+  if(existRow){
+    await _sb.from('search_history').update({ search_count:(existRow.search_count||0)+1, date_str:dateStr, time_str:timeStr }).eq('id', existRow.id).eq('profile_id', uid);
+    searchHistory[0].id = existRow.id;
+    searchHistory[0].count = (existRow.search_count||0)+1;
+  } else {
     const { data } = await _sb.from('search_history').insert({ profile_id:uid, keyword:q, date_str:dateStr, time_str:timeStr, search_count:1 }).select().single();
     if(data) searchHistory[0].id = data.id;
   }
@@ -1401,24 +1411,9 @@ async function enterApp(user){
 // ── 로그아웃 ──
 async function handleLogout(){
   await _sb.auth.signOut();
-
-  // ── 메모리 + 화면 전체 초기화 ──
-  resetAppState();
-  renderAllPages();
-
-  // ── UI 초기화 ──
-  document.getElementById('admin-nav')?.remove();
-  document.getElementById('nav-admin-request')?.style.setProperty('display','none');
-  const footerNameEl   = document.getElementById('footerName');
-  const footerStatusEl = document.getElementById('footerStatus');
-  if(footerNameEl)   footerNameEl.textContent   = '로그인이 필요합니다';
-  if(footerStatusEl) footerStatusEl.textContent = '클릭하여 로그인';
-  if(typeof closeUserPopup==='function') closeUserPopup();
-  if(typeof showToast==='function') showToast('로그아웃 되었습니다.');
-  document.getElementById('auth-overlay').classList.remove('hidden');
-  document.getElementById('login-id').value='';
-  document.getElementById('login-pw').value='';
-  clearAuthStatus(); switchAuthTab('login');
+  // 페이지 전체 새로고침 → 빌더 선택 상태, 검색 결과, 모든 메모리 변수가 100% 초기화됨
+  // 새로고침 후 세션이 없으므로 로그인 오버레이가 표시됨
+  location.reload();
 }
 
 // ── 관리자 메뉴 ──
@@ -1515,14 +1510,14 @@ async function handleReject(requestId){
   if(session?.user) await enterApp(session.user);
 })();
 
-// ── 세션 변화 감지 (다른 탭에서 로그아웃/계정 전환 시에도 데이터 격리 유지) ──
+// ── 세션 변화 감지 (다른 탭에서 로그아웃 시에도 완전 초기화) ──
 _sb.auth.onAuthStateChange((event)=>{
   if(event === 'SIGNED_OUT'){
-    resetAppState();
-    renderAllPages();
-    document.getElementById('admin-nav')?.remove();
-    document.getElementById('nav-admin-request')?.style.setProperty('display','none');
-    document.getElementById('auth-overlay').classList.remove('hidden');
+    // 앱에 진입한 상태에서 로그아웃이 감지되면 새로고침으로 완전 초기화
+    const overlay = document.getElementById('auth-overlay');
+    if(overlay && overlay.classList.contains('hidden')){
+      location.reload();
+    }
   }
 });
 
